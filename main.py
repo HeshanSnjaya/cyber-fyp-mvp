@@ -1,77 +1,15 @@
 import json
+import os
 import sys
 import networkx as nx
 
 
-def load_mock_data():
-    resources = {
-        "ec2": [
-            {
-                "id": "EC2-WebServer-1",
-                "public": True,
-                "iam_role": "Role-S3Admin",
-                "description": "Public-facing web server with admin role"
-            },
-            {
-                "id": "EC2-AppServer-2",
-                "public": False,
-                "iam_role": "Role-S3ReadOnly",
-                "description": "Internal application server"
-            },
-            {
-                "id": "EC2-DevServer-3",
-                "public": True,
-                "iam_role": "Role-LambdaExec",
-                "description": "Dev server accidentally left public"
-            },
-            {
-                "id": "EC2-Internal-4",
-                "public": False,
-                "iam_role": None,
-                "description": "Internal server with no IAM role"
-            },
-        ],
-        "iam_roles": [
-            {
-                "id": "Role-S3Admin",
-                "s3_access": ["S3-CustomerData", "S3-Logs"],
-                "description": "Full admin access to customer data and logs"
-            },
-            {
-                "id": "Role-S3ReadOnly",
-                "s3_access": ["S3-PublicAssets"],
-                "description": "Read-only access to public assets"
-            },
-            {
-                "id": "Role-LambdaExec",
-                "s3_access": ["S3-BackupDB"],
-                "description": "Lambda execution role with backup access"
-            },
-        ],
-        "s3": [
-            {
-                "id": "S3-CustomerData",
-                "sensitive": True,
-                "description": "Contains PII and customer records"
-            },
-            {
-                "id": "S3-Logs",
-                "sensitive": False,
-                "description": "Application logs"
-            },
-            {
-                "id": "S3-PublicAssets",
-                "sensitive": False,
-                "description": "Static website assets"
-            },
-            {
-                "id": "S3-BackupDB",
-                "sensitive": True,
-                "description": "Database backups with credentials"
-            },
-        ],
-    }
-    return resources
+MOCK_DATA_FILE = os.path.join(os.path.dirname(__file__), "mock_data.json")
+
+
+def load_mock_data(path=MOCK_DATA_FILE):
+    with open(path, "r", encoding="utf-8") as f:
+        return json.load(f)
 
 
 def build_graph(resources):
@@ -109,28 +47,117 @@ def find_attack_paths(graph, resources):
     return attack_paths
 
 
-def score_path(path, graph):
-    score = 0
+# CVSS v3.1 base metric weights (per the official specification).
+CVSS_WEIGHTS = {
+    "AV": {"N": 0.85, "A": 0.62, "L": 0.55, "P": 0.20},
+    "AC": {"L": 0.77, "H": 0.44},
+    # Privileges Required is scope-dependent: the second value applies when
+    # Scope is Changed.
+    "PR": {"N": (0.85, 0.85), "L": (0.62, 0.68), "H": (0.27, 0.50)},
+    "UI": {"N": 0.85, "R": 0.62},
+    "C": {"H": 0.56, "L": 0.22, "N": 0.0},
+    "I": {"H": 0.56, "L": 0.22, "N": 0.0},
+    "A": {"H": 0.56, "L": 0.22, "N": 0.0},
+}
 
-    if path[0] == "Internet":
-        score += 5
 
-    target_node = path[-1]
-    node_data = graph.nodes[target_node]
-    if node_data.get("sensitive", False):
-        score += 5
+def derive_cvss_metrics(path, graph):
+    """Map an attack path's properties onto CVSS v3.1 base metrics."""
+    target = graph.nodes[path[-1]]
+    internet_entry = path[0] == "Internet"
+    hops = len(path) - 1
+    role_in_path = [n for n in path if graph.nodes[n].get("type") == "iam_role"]
+    crosses_role = len(role_in_path) > 0
+    admin_role = any("Admin" in n for n in role_in_path)
+    sensitive_target = target.get("sensitive", False)
 
-    if len(path) <= 4:
-        score += 2
+    return {
+        # Internet-reachable entry is a Network vector; otherwise Local.
+        "AV": "N" if internet_entry else "L",
+        # Short chains are easy to traverse; longer ones add complexity.
+        "AC": "L" if hops <= 3 else "H",
+        # Public exposure needs no prior privileges; internal needs some.
+        "PR": "N" if internet_entry else "L",
+        # No user interaction in these automated reachability paths.
+        "UI": "N",
+        # Assuming an IAM role crosses a security authority -> Scope Changed.
+        "S": "C" if crosses_role else "U",
+        # Sensitive data fully compromises confidentiality.
+        "C": "H" if sensitive_target else "L",
+        # Admin (write-capable) roles in the path threaten integrity.
+        "I": "H" if admin_role else "N",
+        # These paths model data access, not service disruption.
+        "A": "N",
+    }
 
-    if score >= 10:
-        severity = "HIGH"
-    elif score >= 7:
-        severity = "MEDIUM"
+
+def _roundup(value):
+    """CVSS Roundup: smallest one-decimal value >= the input."""
+    rounded = int(value * 100000)
+    if rounded % 10000 == 0:
+        return rounded / 100000.0
+    return (int(rounded / 10000) + 1) / 10.0
+
+
+def cvss_base_score(metrics):
+    """Compute the CVSS v3.1 base score from derived metrics."""
+    scope_changed = metrics["S"] == "C"
+
+    iss = 1 - (
+        (1 - CVSS_WEIGHTS["C"][metrics["C"]])
+        * (1 - CVSS_WEIGHTS["I"][metrics["I"]])
+        * (1 - CVSS_WEIGHTS["A"][metrics["A"]])
+    )
+
+    if scope_changed:
+        impact = 7.52 * (iss - 0.029) - 3.25 * (iss - 0.02) ** 15
     else:
-        severity = "LOW"
+        impact = 6.42 * iss
 
-    return {"score": score, "severity": severity}
+    pr_weight = CVSS_WEIGHTS["PR"][metrics["PR"]][1 if scope_changed else 0]
+    exploitability = (
+        8.22
+        * CVSS_WEIGHTS["AV"][metrics["AV"]]
+        * CVSS_WEIGHTS["AC"][metrics["AC"]]
+        * pr_weight
+        * CVSS_WEIGHTS["UI"][metrics["UI"]]
+    )
+
+    if impact <= 0:
+        return 0.0
+
+    if scope_changed:
+        return _roundup(min(1.08 * (impact + exploitability), 10))
+    return _roundup(min(impact + exploitability, 10))
+
+
+def cvss_severity(score):
+    """CVSS v3.1 qualitative severity rating."""
+    if score == 0.0:
+        return "NONE"
+    if score < 4.0:
+        return "LOW"
+    if score < 7.0:
+        return "MEDIUM"
+    if score < 9.0:
+        return "HIGH"
+    return "CRITICAL"
+
+
+def cvss_vector(metrics):
+    """Render the CVSS v3.1 base vector string."""
+    order = ["AV", "AC", "PR", "UI", "S", "C", "I", "A"]
+    return "CVSS:3.1/" + "/".join(f"{k}:{metrics[k]}" for k in order)
+
+
+def score_path(path, graph):
+    metrics = derive_cvss_metrics(path, graph)
+    score = cvss_base_score(metrics)
+    return {
+        "score": score,
+        "severity": cvss_severity(score),
+        "cvss_vector": cvss_vector(metrics),
+    }
 
 
 def print_results(attack_paths, graph):
@@ -147,39 +174,44 @@ def print_results(attack_paths, graph):
 
     print(f"  Found {len(attack_paths)} attack path(s):\n")
 
+    labels = {
+        "CRITICAL": "[CRITICAL]",
+        "HIGH": "[HIGH]",
+        "MEDIUM": "[WARNING]",
+        "LOW": "[INFO]",
+        "NONE": "[INFO]",
+    }
+
     results = []
     for i, path in enumerate(attack_paths, 1):
         scoring = score_path(path, graph)
         path_str = " -> ".join(path)
-
-        if scoring["severity"] == "HIGH":
-            label = "[CRITICAL]"
-        elif scoring["severity"] == "MEDIUM":
-            label = "[WARNING]"
-        else:
-            label = "[INFO]"
+        label = labels.get(scoring["severity"], "[INFO]")
 
         print(f"  {label} Attack Path #{i}")
         print(f"    Path:     {path_str}")
         print(f"    Hops:     {len(path) - 1}")
-        print(f"    Score:    {scoring['score']}/12")
-        print(f"    Severity: {scoring['severity']}")
+        print(f"    CVSS:     {scoring['score']:.1f}/10 ({scoring['severity']})")
+        print(f"    Vector:   {scoring['cvss_vector']}")
         print()
 
         results.append({
             "path": path,
             "path_string": path_str,
             "hops": len(path) - 1,
-            "score": scoring["score"],
+            "cvss_score": scoring["score"],
+            "cvss_vector": scoring["cvss_vector"],
             "severity": scoring["severity"],
         })
 
     print("-" * 60)
     print(f"  Summary: {len(attack_paths)} path(s) detected")
+    critical = sum(1 for r in results if r["severity"] == "CRITICAL")
     high = sum(1 for r in results if r["severity"] == "HIGH")
     medium = sum(1 for r in results if r["severity"] == "MEDIUM")
-    low = sum(1 for r in results if r["severity"] == "LOW")
-    print(f"  HIGH: {high} | MEDIUM: {medium} | LOW: {low}")
+    low = sum(1 for r in results if r["severity"] in ("LOW", "NONE"))
+    print(f"  CRITICAL: {critical} | HIGH: {high} | "
+          f"MEDIUM: {medium} | LOW: {low}")
     print("=" * 60)
 
     return results
@@ -215,7 +247,8 @@ def main():
                 "path": path,
                 "path_string": " -> ".join(path),
                 "hops": len(path) - 1,
-                "score": scoring["score"],
+                "cvss_score": scoring["score"],
+                "cvss_vector": scoring["cvss_vector"],
                 "severity": scoring["severity"],
             })
         output_json(results)

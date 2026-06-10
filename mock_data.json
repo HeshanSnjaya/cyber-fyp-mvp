@@ -1,0 +1,67 @@
+{
+  "ec2": [
+    {
+      "id": "EC2-WebServer-1",
+      "public": true,
+      "iam_role": "Role-S3Admin",
+      "description": "Public-facing web server with admin role"
+    },
+    {
+      "id": "EC2-AppServer-2",
+      "public": false,
+      "iam_role": "Role-S3ReadOnly",
+      "description": "Internal application server"
+    },
+    {
+      "id": "EC2-DevServer-3",
+      "public": true,
+      "iam_role": "Role-LambdaExec",
+      "description": "Dev server accidentally left public"
+    },
+    {
+      "id": "EC2-Internal-4",
+      "public": false,
+      "iam_role": null,
+      "description": "Internal server with no IAM role"
+    }
+  ],
+  "iam_roles": [
+    {
+      "id": "Role-S3Admin",
+      "s3_access": ["S3-CustomerData", "S3-Logs"],
+      "description": "Full admin access to customer data and logs"
+    },
+    {
+      "id": "Role-S3ReadOnly",
+      "s3_access": ["S3-PublicAssets"],
+      "description": "Read-only access to public assets"
+    },
+    {
+      "id": "Role-LambdaExec",
+      "s3_access": ["S3-BackupDB"],
+      "description": "Lambda execution role with backup access"
+    }
+  ],
+  "s3": [
+    {
+      "id": "S3-CustomerData",
+      "sensitive": true,
+      "description": "Contains PII and customer records"
+    },
+    {
+      "id": "S3-Logs",
+      "sensitive": false,
+      "description": "Application logs"
+    },
+    {
+      "id": "S3-PublicAssets",
+      "sensitive": false,
+      "description": "Static website assets"
+    },
+    {
+      "id": "S3-BackupDB",
+      "sensitive": true,
+      "description": "Database backups with credentials"
+    }
+  ]
+}
