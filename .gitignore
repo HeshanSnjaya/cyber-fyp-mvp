@@ -7,3 +7,12 @@ __pycache__/
 *.egg-info/
 dist/
 build/
+
+# Local secrets — encrypted AWS credentials must never be committed
+.secrets/
+
+# Local scan-history database
+scan_history.db
+
+# Streamlit
+.streamlit/secrets.toml

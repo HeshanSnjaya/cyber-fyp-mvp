@@ -1,1 +1,16 @@
+# Core analysis engine
 networkx==3.4.2
+
+# Web UI
+streamlit>=1.40,<2.0
+
+# Live AWS integration
+boto3>=1.35
+
+# Data handling & visualization
+pandas>=2.0
+plotly>=5.20
+pyvis>=0.3.2
+
+# Encrypted local credential storage
+cryptography>=42.0
