@@ -1,148 +1,177 @@
-# Graph-Based Attack Path Analysis for Detecting Compound Cloud Security Misconfigurations
+# CloudPath — Graph-Based Cloud Attack Path Analyzer
 
-## Overview
+Detecting **compound** cloud security misconfigurations in AWS by chaining
+public exposure → IAM privilege → sensitive data into scored, explainable
+attack paths.
 
-Cloud misconfigurations account for up to 80% of data security breaches. Traditional tools like Prowler, ScoutSuite, and Checkov perform rule-based checks on individual resources but fail to detect compound risks — where multiple moderate misconfigurations chain together into exploitable attack paths.
+> Cloud misconfigurations account for up to 80% of data breaches. Traditional
+> tools (Prowler, ScoutSuite, Checkov) flag *individual* misconfigurations but
+> miss compound risk — where several moderate issues chain into a critical,
+> exploitable path. CloudPath models the account as a directed graph and finds
+> those chains.
 
-For example, a publicly accessible EC2 instance assuming an overprivileged IAM role that has access to an unencrypted S3 bucket containing sensitive data. Each misconfiguration alone may seem low-risk, but chained together they form a critical vulnerability.
+---
 
-This tool addresses that gap by building a dependency graph from AWS resources and applying graph traversal algorithms to discover reachable attack paths from public exposure points to sensitive data stores.
+## What's new in v2.0
 
-## What It Does
+The original MVP was a CLI that scored mock data. v2.0 turns it into a
+demo-ready full-stack application:
 
-1. **Scans AWS resources** — Loads resource data for EC2 instances, IAM roles, and S3 buckets (currently using mock data, designed for future real AWS integration)
+| Area | MVP (v1) | v2.0 |
+|------|----------|------|
+| Interface | CLI only | **Streamlit web UI** + CLI |
+| Data source | Mock JSON only | **Switchable: Sample JSON ↔ Live AWS** |
+| AWS | Planned | **Live `boto3` scan** of EC2 / IAM / S3 |
+| Credentials | — | **Entered in-app, encrypted, stored in project** |
+| Scoring | CVSS v3.1 | CVSS v3.1 (unchanged, spec-accurate) |
+| Threat detail | Path + score | **MITRE ATT&CK, kill-chain, remediation, impact** |
+| Visualization | Text | **Interactive attack graph** |
+| Persistence | — | **SQLite scan history + trends** |
 
-2. **Builds a directed graph** — Constructs a networkx directed graph where:
-   - Nodes represent: Internet entry point, EC2 instances, IAM roles, S3 buckets
-   - Edges represent: public access (Internet → EC2), role assumption (EC2 → IAM Role), data access (IAM Role → S3)
+---
 
-3. **Detects attack paths** — Uses BFS-based traversal to find all simple paths from the "Internet" node to any S3 bucket marked as sensitive
-
-4. **Scores and classifies risk** — Each path receives a severity score based on:
-   - Public exposure (+5 points)
-   - Sensitive data target (+5 points)
-   - Short path / easy exploitation (+2 points)
-   - Classified as HIGH (≥10), MEDIUM (≥7), or LOW (<7)
-
-5. **Outputs findings** — Results are displayed via CLI with clear path visualization, or exported as structured JSON for automation
-
-## Project Structure
+## Architecture
 
 ```
-Cyber/
-├── main.py              # Main analysis tool
-├── requirements.txt     # Python dependencies
-├── .gitignore           # Git ignore rules
-└── README.md            # This file
+                    ┌──────────────────────────────────────────┐
+                    │              Front-ends                   │
+                    │   app.py (Streamlit UI)   main.py (CLI)   │
+                    └───────────────────┬──────────────────────┘
+                                        │
+                    ┌───────────────────▼──────────────────────┐
+                    │            core.analyzer                  │
+                    │  fetch → graph → paths → CVSS → intel     │
+                    └───┬──────────┬──────────┬──────────┬──────┘
+                        │          │          │          │
+              data_sources   graph_engine   cvss    threat_intel
+              (json / aws)   (networkx)   (v3.1)   (MITRE + fixes)
+                        │
+                 credentials (encrypted)   database (SQLite history)
 ```
 
-## Key Functions
+Both data sources emit one **normalized schema**, so the graph engine, scorer
+and UI are completely decoupled from where the data came from.
 
-| Function | Purpose |
-|----------|---------|
-| `load_mock_data()` | Returns mock AWS resource data (replaceable with real scanner) |
-| `build_graph()` | Constructs the directed resource dependency graph |
-| `find_attack_paths()` | Finds all paths from Internet to sensitive S3 buckets |
-| `score_path()` | Calculates risk score and severity for each path |
-| `print_results()` | Formats and displays CLI output |
-| `output_json()` | Outputs results as structured JSON |
+```
+cyber-fyp-mvp/
+├── app.py                     # Streamlit web app (main UI)
+├── main.py                    # CLI (sample or --aws, --json)
+├── mock_data.json             # Bundled sample inventory
+├── core/
+│   ├── analyzer.py            # End-to-end orchestrator
+│   ├── graph_engine.py        # Graph build + attack-path search
+│   ├── cvss.py                # CVSS v3.1 scoring
+│   ├── threat_intel.py        # MITRE ATT&CK + remediation + narrative
+│   ├── credentials.py         # Encrypted, project-local AWS key store
+│   ├── database.py            # SQLite scan history
+│   └── data_sources/
+│       ├── base.py            # DataSource interface
+│       ├── json_source.py     # Sample data provider
+│       └── aws_source.py      # Live AWS provider (boto3)
+├── ui/
+│   └── graph_viz.py           # pyvis interactive graph
+└── requirements.txt
+```
 
-## Prerequisites
+---
 
-- Python 3.9 or higher
-
-## How to Run
-
-### 1. Clone the repository
+## Quick start
 
 ```bash
-git clone <repository-url>
-cd Cyber
-```
-
-### 2. Create and activate a virtual environment
-
-**Windows:**
-```bash
+# 1. Create & activate a virtual environment
 python -m venv venv
-.\venv\Scripts\activate
-```
+.\venv\Scripts\activate            # Windows
+# source venv/bin/activate          # macOS/Linux
 
-**macOS/Linux:**
-```bash
-python3 -m venv venv
-source venv/bin/activate
-```
-
-### 3. Install dependencies
-
-```bash
+# 2. Install dependencies
 pip install -r requirements.txt
+
+# 3. Launch the web app
+streamlit run app.py
 ```
 
-### 4. Run the tool
+The app opens in your browser. Choose a data source in the sidebar and click
+**Run Analysis**.
 
-Standard CLI output:
+### CLI (optional)
+
 ```bash
-python main.py
+python main.py                # analyze sample data (pretty output)
+python main.py --json         # JSON output
+python main.py --aws          # live AWS scan (uses saved keys)
+python main.py --aws --json   # live AWS scan, JSON output
 ```
 
-JSON output (for automation/integration):
-```bash
-python main.py --json
-```
+---
 
-## Example Output
+## Using the two modes
 
-```
-  Graph built: 12 nodes, 9 edges
+### 🧪 Sample Data (offline)
+Uses the bundled `mock_data.json`. No AWS account or keys required — ideal for
+demonstrations. Runs instantly.
 
-============================================================
-  GRAPH-BASED ATTACK PATH ANALYSIS RESULTS
-============================================================
+### ☁️ Live AWS Account
+1. In the sidebar, switch **Data source** to *Live AWS Account*.
+2. Enter your **Access Key ID**, **Secret Access Key** (and optional session
+   token / region) and click **Save**.
+3. (Optional) **Test Connection** — verifies the keys via STS.
+4. Click **Run Analysis** to scan real EC2, IAM and S3 resources.
 
-  Found 2 attack path(s):
+**Credential handling (by design):**
+- Keys are entered **in the app** and saved **inside the project** under
+  `.secrets/`, encrypted with Fernet (AES-128-CBC + HMAC).
+- The app **never** reads environment variables or `~/.aws`. Live mode passes
+  your saved keys *explicitly* to `boto3.Session`.
+- `.secrets/` and `scan_history.db` are git-ignored — nothing sensitive is
+  committed.
 
-  [CRITICAL] Attack Path #1
-    Path:     Internet -> EC2-WebServer-1 -> Role-S3Admin -> S3-CustomerData
-    Hops:     3
-    Score:    12/12
-    Severity: HIGH
+**Required AWS permissions:** read-only is sufficient. AWS managed
+`SecurityAudit` or `ReadOnlyAccess` covers everything (EC2 `Describe*`, IAM
+`List*`/`Get*`, S3 `List`/`GetBucket*`, STS `GetCallerIdentity`). Partial
+permissions degrade gracefully rather than crashing the scan.
 
-  [CRITICAL] Attack Path #2
-    Path:     Internet -> EC2-DevServer-3 -> Role-LambdaExec -> S3-BackupDB
-    Hops:     3
-    Score:    12/12
-    Severity: HIGH
+---
 
-------------------------------------------------------------
-  Summary: 2 path(s) detected
-  HIGH: 2 | MEDIUM: 0 | LOW: 0
-============================================================
-```
+## How the analysis works
 
-## How It Works (Technical Flow)
+1. **Fetch** — the selected source returns a normalized inventory of EC2
+   instances (public? which role?), IAM roles (which buckets? admin?) and S3
+   buckets (sensitive? encrypted? public?).
+2. **Graph** — a `networkx` directed graph is built:
+   `Internet → EC2 → IAM Role → S3`.
+3. **Paths** — every simple path from `Internet` to a **sensitive** S3 bucket is
+   discovered (compound attack paths).
+4. **Score** — each path is mapped onto **CVSS v3.1** base metrics and scored
+   with the official FIRST formula, so vectors match public calculators.
+5. **Enrich** — each path gets a plain-English narrative, a per-hop kill chain,
+   **MITRE ATT&CK** techniques (T1190, T1552.005, T1078.004, T1530),
+   node-specific remediation and a business-impact summary.
+6. **Report** — results render as metrics, charts, an interactive graph and
+   expandable finding cards; every scan is saved to SQLite history and can be
+   exported as JSON/CSV.
 
-```
-Mock AWS Data → Graph Construction → BFS Path Detection → Risk Scoring → CLI/JSON Output
-```
+### Live-AWS heuristics
+- **EC2 public** = has a public IP **and** a security group open to `0.0.0.0/0`.
+- **IAM S3 access** = parsed from attached + inline policy statements
+  (`s3:Get*`/`s3:List*`/`s3:*`), mapped to specific bucket ARNs; `Resource:"*"`
+  or `AdministratorAccess`/`AmazonS3FullAccess` ⇒ admin (all buckets).
+- **S3 sensitive** = name keywords (customer, pii, backup, prod, …) **or** a
+  risky posture (unencrypted / public-access not fully blocked).
 
-1. Resource data is loaded (EC2 with public/private flags, IAM roles with S3 permissions, S3 buckets with sensitivity flags)
-2. A directed graph is built using networkx with edges representing access relationships
-3. The tool identifies all sensitive S3 buckets as targets
-4. For each target, BFS finds all simple (cycle-free) paths from the Internet node
-5. Each discovered path is scored based on exposure, sensitivity, and path length
-6. Results are presented with severity classification
+---
 
-## Technologies Used
+## Technologies
 
-- **Python** — Core language
-- **networkx** — Graph construction and traversal algorithms
+- **Python 3.9+**
+- **networkx** — graph construction & traversal
+- **Streamlit** — web UI
+- **boto3** — live AWS integration
+- **pyvis** — interactive graph visualization
+- **plotly / pandas** — charts & tables
+- **cryptography** — encrypted credential storage
+- **SQLite** — scan-history persistence
 
-## Future Enhancements
-
-- Real AWS integration using boto3
-- Support for Lambda, RDS, and Security Groups
-- Cytoscape.js dashboard for visual graph exploration
-- LocalStack testing environment
-- Comparison benchmarks against Prowler/ScoutSuite
+## Roadmap
+- Lambda, RDS, Security Group and VPC-peering nodes
+- LocalStack-based integration tests
+- Benchmarks vs. Prowler / ScoutSuite
