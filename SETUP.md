@@ -57,7 +57,7 @@ pip install --upgrade pip
 pip install -r requirements.txt
 ```
 
-This installs: `streamlit`, `networkx`, `boto3`, `pandas`, `plotly`, `pyvis`,
+This installs: `streamlit`, `networkx`, `boto3`, `pandas`, `plotly`,
 `cryptography`.
 
 ## 4. Run the web app
@@ -122,5 +122,5 @@ These are intentionally git-ignored. Everything needed to run is in the repo.
 | PowerShell won't activate venv | `Set-ExecutionPolicy -Scope CurrentUser RemoteSigned` then retry. |
 | `streamlit: command not found` | Activate the venv first (step 2), then reinstall (step 3). |
 | Port 8501 in use | `streamlit run app.py --server.port 8600` |
-| Interactive graph is blank | Ensure `pyvis` installed: `pip install pyvis`. |
+| Attack graph doesn't show | It uses Streamlit's built-in Graphviz renderer; just refresh the page. |
 | `pip install` fails on a package | Upgrade pip first: `pip install --upgrade pip`. |

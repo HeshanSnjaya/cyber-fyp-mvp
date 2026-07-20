@@ -25,7 +25,7 @@ demo-ready full-stack application:
 | Credentials | — | **Entered in-app, encrypted, stored in project** |
 | Scoring | CVSS v3.1 | CVSS v3.1 (unchanged, spec-accurate) |
 | Threat detail | Path + score | **MITRE ATT&CK, kill-chain, remediation, impact** |
-| Visualization | Text | **Interactive attack graph** |
+| Visualization | Text | **Static layered attack-graph diagram** |
 | Persistence | — | **SQLite scan history + trends** |
 
 ---
@@ -69,7 +69,7 @@ cyber-fyp-mvp/
 │       ├── json_source.py     # Sample data provider
 │       └── aws_source.py      # Live AWS provider (boto3)
 ├── ui/
-│   └── graph_viz.py           # pyvis interactive graph
+│   └── graph_viz.py           # static Graphviz attack-graph diagram
 └── requirements.txt
 ```
 
@@ -146,7 +146,7 @@ permissions degrade gracefully rather than crashing the scan.
 5. **Enrich** — each path gets a plain-English narrative, a per-hop kill chain,
    **MITRE ATT&CK** techniques (T1190, T1552.005, T1078.004, T1530),
    node-specific remediation and a business-impact summary.
-6. **Report** — results render as metrics, charts, an interactive graph and
+6. **Report** — results render as metrics, charts, a static attack-graph diagram and
    expandable finding cards; every scan is saved to SQLite history and can be
    exported as JSON/CSV.
 
@@ -166,7 +166,7 @@ permissions degrade gracefully rather than crashing the scan.
 - **networkx** — graph construction & traversal
 - **Streamlit** — web UI
 - **boto3** — live AWS integration
-- **pyvis** — interactive graph visualization
+- **Graphviz** (via `st.graphviz_chart`) — static layered attack-graph diagram
 - **plotly / pandas** — charts & tables
 - **cryptography** — encrypted credential storage
 - **SQLite** — scan-history persistence
