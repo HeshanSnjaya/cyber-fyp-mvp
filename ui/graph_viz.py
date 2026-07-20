@@ -1,120 +1,143 @@
-"""Interactive attack-graph rendering for the Streamlit UI.
+"""Static attack-graph rendering for the Streamlit UI.
 
-Builds a pyvis network from the analysis result, colour-coded by resource type,
-with edges that lie on a discovered attack path highlighted in red. Returns raw
-HTML that the app embeds via ``streamlit.components.v1.html``.
+Produces a **static, layered diagram** (Graphviz DOT) rather than an animated,
+zoomable physics graph. The `dot` engine lays the resources out in clean,
+aligned columns:
+
+    Internet   →   EC2 instances   →   IAM roles   →   S3 buckets
+
+so connections and labels never overlap. Edges that lie on a discovered attack
+path are drawn bold red; sensitive buckets are red; every node carries a clear
+multi-line label. The DOT string is rendered by Streamlit's built-in
+``st.graphviz_chart`` (no system Graphviz binary or extra dependency required).
 """
 
 from __future__ import annotations
 
 from core import graph_engine
 
-# Colour palette per node type.
+# Categorical colour per node type (validated: distinct under CVD; identity is
+# also carried by node shape + text label, never colour alone).
 _NODE_STYLE = {
-    "internet": {"color": "#8b5cf6", "shape": "star", "size": 34},
-    "ec2": {"color": "#3b82f6", "shape": "box", "size": 26},
-    "iam_role": {"color": "#f59e0b", "shape": "diamond", "size": 26},
-    "s3": {"color": "#10b981", "shape": "database", "size": 26},
+    "internet": {"fill": "#8b5cf6", "shape": "doublecircle"},
+    "ec2": {"fill": "#3b82f6", "shape": "box"},
+    "iam_role": {"fill": "#f59e0b", "shape": "hexagon"},
+    "s3": {"fill": "#10b981", "shape": "cylinder"},
 }
-_SENSITIVE_COLOR = "#ef4444"
-_ATTACK_EDGE_COLOR = "#ef4444"
-_NORMAL_EDGE_COLOR = "#94a3b8"
+_SENSITIVE_FILL = "#ef4444"
+_ATTACK_EDGE = "#ef4444"
+_NORMAL_EDGE = "#94a3b8"
+_ONPATH_BORDER = "#f8fafc"
+_OFFPATH_BORDER = "#334155"
+_FONT = "Helvetica,Arial,sans-serif"
+
+# Column order (left → right) used to align ranks.
+_LAYER_ORDER = ["internet", "ec2", "iam_role", "s3"]
 
 
-def render_attack_graph(result, height="600px"):
-    """Return standalone HTML for the interactive attack graph.
+def _esc(text):
+    """Escape a string for use inside a DOT double-quoted literal."""
+    return str(text).replace("\\", "\\\\").replace('"', '\\"')
 
-    Falls back to ``None`` if pyvis is unavailable so the caller can degrade
-    gracefully to a static table.
-    """
-    try:
-        from pyvis.network import Network
-    except Exception:
-        return None
 
+def _node_label(node, data):
+    """Build a clear, multi-line node label."""
+    ntype = data.get("type")
+    if ntype == "internet":
+        return "Internet"
+    if ntype == "ec2":
+        status = "public" if data.get("public") else "private"
+        return f"{node}\\n({status})"
+    if ntype == "iam_role":
+        status = "ADMIN" if data.get("admin") else "role"
+        return f"{node}\\n[{status}]"
+    if ntype == "s3":
+        status = "SENSITIVE" if data.get("sensitive") else "standard"
+        return f"{node}\\n({status})"
+    return str(node)
+
+
+def build_dot(result):
+    """Return a Graphviz DOT string for the analysed resources."""
     resources = result["resources"]
     graph = graph_engine.build_graph(resources)
 
-    # Collect the set of directed edges that appear on any attack path.
-    attack_edges = set()
-    attack_nodes = set()
+    # Edges / nodes that lie on any attack path.
+    attack_edges, attack_nodes = set(), set()
     for finding in result["findings"]:
         path = finding["path"]
         attack_nodes.update(path)
         for i in range(len(path) - 1):
             attack_edges.add((path[i], path[i + 1]))
 
-    net = Network(
-        height=height,
-        width="100%",
-        directed=True,
-        bgcolor="#0e1117",
-        font_color="#e2e8f0",
-        notebook=False,
-    )
-    net.barnes_hut(gravity=-8000, spring_length=160, spring_strength=0.02)
-
+    # Group node ids by type so we can force column alignment via rank=same.
+    by_type = {t: [] for t in _LAYER_ORDER}
     for node, data in graph.nodes(data=True):
-        ntype = data.get("type", "unknown")
-        style = _NODE_STYLE.get(ntype, {"color": "#64748b", "shape": "dot", "size": 22})
-        color = style["color"]
-        if ntype == "s3" and data.get("sensitive"):
-            color = _SENSITIVE_COLOR
-        border = "#f8fafc" if node in attack_nodes else color
-        net.add_node(
-            node,
-            label=node,
-            title=_node_tooltip(node, data),
-            color={"background": color, "border": border},
-            shape=style["shape"],
-            size=style["size"] + (8 if node in attack_nodes else 0),
-            borderWidth=3 if node in attack_nodes else 1,
-        )
+        by_type.setdefault(data.get("type", "internet"), []).append((node, data))
 
+    lines = [
+        "digraph cloudpath {",
+        "  rankdir=LR;",
+        "  bgcolor=\"transparent\";",
+        "  splines=true;",
+        "  nodesep=0.45;",
+        '  ranksep="1.15 equally";',
+        "  pad=0.3;",
+        f'  node [style="filled", fontname="{_FONT}", fontsize=11, '
+        'fontcolor="#0b1120", penwidth=1.6, margin="0.16,0.09"];',
+        f'  edge [fontname="{_FONT}", fontsize=9, arrowsize=0.8];',
+    ]
+
+    # Emit nodes, grouped into same-rank columns for clean alignment.
+    for ntype in _LAYER_ORDER:
+        nodes = sorted(by_type.get(ntype, []), key=lambda x: x[0])
+        if not nodes:
+            continue
+        lines.append("  { rank=same;")
+        for node, data in nodes:
+            style = _NODE_STYLE.get(ntype, {"fill": "#64748b", "shape": "box"})
+            fill = style["fill"]
+            if ntype == "s3" and data.get("sensitive"):
+                fill = _SENSITIVE_FILL
+            on_path = node in attack_nodes
+            border = _ONPATH_BORDER if on_path else _OFFPATH_BORDER
+            shape = style["shape"]
+            extra_style = ',rounded' if ntype == "ec2" else ''
+            lines.append(
+                f'    "{_esc(node)}" [label="{_node_label(node, data)}", '
+                f'shape={shape}, fillcolor="{fill}", color="{border}", '
+                f'penwidth={3 if on_path else 1.4}, style="filled{extra_style}"];'
+            )
+        lines.append("  }")
+
+    # Emit edges.
     for src, dst, data in graph.edges(data=True):
         on_path = (src, dst) in attack_edges
-        net.add_edge(
-            src,
-            dst,
-            title=data.get("relation", ""),
-            label=data.get("relation", "") if on_path else "",
-            color=_ATTACK_EDGE_COLOR if on_path else _NORMAL_EDGE_COLOR,
-            width=4 if on_path else 1,
-            arrows="to",
+        relation = str(data.get("relation", "")).replace("_", " ")
+        color = _ATTACK_EDGE if on_path else _NORMAL_EDGE
+        fontcolor = _ATTACK_EDGE if on_path else "#64748b"
+        penwidth = 2.6 if on_path else 1.3
+        lines.append(
+            f'  "{_esc(src)}" -> "{_esc(dst)}" '
+            f'[label=" {relation} ", color="{color}", fontcolor="{fontcolor}", '
+            f'penwidth={penwidth}];'
         )
 
-    net.set_options(
-        """
-        {
-          "interaction": {"hover": true, "tooltipDelay": 80},
-          "physics": {"stabilization": {"iterations": 150}},
-          "edges": {"smooth": {"type": "dynamic"}}
-        }
-        """
-    )
-
-    try:
-        return net.generate_html(notebook=False)
-    except TypeError:
-        # Older pyvis signatures.
-        return net.generate_html()
+    lines.append("}")
+    return "\n".join(lines)
 
 
-def _node_tooltip(node, data):
-    lines = [f"{node}", f"type: {data.get('type')}"]
-    for key in ("description", "region", "public", "public_ip", "sensitive",
-                "encrypted", "admin", "instance_id"):
-        if key in data and data[key] not in (None, ""):
-            lines.append(f"{key}: {data[key]}")
-    return "\n".join(str(l) for l in lines)
+# Backwards-compatible alias (older callers used render_attack_graph()).
+def render_attack_graph(result, height=None):
+    return build_dot(result)
 
 
 def legend_items():
-    """Return (label, color) pairs for a UI legend."""
+    """Return (label, colour) pairs for a UI legend."""
     return [
-        ("Internet", _NODE_STYLE["internet"]["color"]),
-        ("EC2 instance", _NODE_STYLE["ec2"]["color"]),
-        ("IAM role", _NODE_STYLE["iam_role"]["color"]),
-        ("S3 bucket", _NODE_STYLE["s3"]["color"]),
-        ("Sensitive S3 / attack edge", _SENSITIVE_COLOR),
+        ("Internet", _NODE_STYLE["internet"]["fill"]),
+        ("EC2 instance", _NODE_STYLE["ec2"]["fill"]),
+        ("IAM role", _NODE_STYLE["iam_role"]["fill"]),
+        ("S3 bucket", _NODE_STYLE["s3"]["fill"]),
+        ("Sensitive S3 / attack path", _SENSITIVE_FILL),
     ]

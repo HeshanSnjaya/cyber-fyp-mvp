@@ -8,9 +8,10 @@ streamlit>=1.40,<2.0
 boto3>=1.35
 
 # Data handling & visualization
+# (the attack graph is rendered as a static Graphviz diagram via Streamlit's
+#  built-in st.graphviz_chart — no extra graph library needed)
 pandas>=2.0
 plotly>=5.20
-pyvis>=0.3.2
 
 # Encrypted local credential storage
 cryptography>=42.0

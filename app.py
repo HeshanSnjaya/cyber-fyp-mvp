@@ -281,17 +281,21 @@ def render_charts(result):
 
 
 def render_graph(result):
-    st.markdown("### 🕸️ Interactive Attack Graph")
+    st.markdown("### 🕸️ Attack Graph")
+    st.caption(
+        "Static layered diagram — resources flow left→right "
+        "(Internet → EC2 → IAM role → S3). Bold red edges trace attack paths."
+    )
     legend = "  ".join(
         f'<span class="cp-pill" style="border-color:{c}">● {label}</span>'
         for label, c in graph_viz.legend_items()
     )
     st.markdown(legend, unsafe_allow_html=True)
-    html = graph_viz.render_attack_graph(result)
-    if html:
-        st.components.v1.html(html, height=620, scrolling=False)
-    else:
-        st.info("Install `pyvis` to see the interactive graph: `pip install pyvis`.")
+    try:
+        dot = graph_viz.build_dot(result)
+        st.graphviz_chart(dot, use_container_width=True)
+    except Exception as exc:  # pragma: no cover - defensive
+        st.warning(f"Could not render the graph diagram: {exc}")
 
 
 def render_findings(result):
